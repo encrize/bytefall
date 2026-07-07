@@ -50,5 +50,7 @@ Drag and drop any file onto the window or pass it as an argument:
 | Mouse wheel | Scroll |
 
 # IMG2BIN
-You can create images like that using [img2bin](https://github.com/Gibsy/image-to-bin)
+You can create images like that using [img2bin](https://github.com/encrize/image-to-bin)
 ![IMG2BIN](previewBIN.png)
+
+made by encrize , my website - https://encrize.vip
