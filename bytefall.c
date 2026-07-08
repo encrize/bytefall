@@ -11,37 +11,33 @@
 #define MIN_H   760
 #define BAR_H    48
 #define BOT_H    78
-#define SCR_W    12
+#define SCR_W    14
+#define SB_H     30
+#define PIXEL_H  3 
 
-/* colours */
-#define C_BG        0x141416ff
-#define C_BAR       0x222224ff
-#define C_DIV       0x333336ff
-#define C_TEXT      0xf2f2f4ff
-#define C_MUTED     0x8a8a90ff
-#define C_BTN       0x38383cff
-#define C_BTN_HOV   0x505056ff
-#define C_BTN_BRD   0x555558ff
-#define C_ACT_BG    0x061830ff
-#define C_ACT       0x0a84ffff
-#define C_GREEN     0x32d74bff
-#define C_GREEN_BG  0x0c2216ff
-#define C_RED       0xff3b30ff
-#define C_RED_BG    0x2a0c0cff
+/* colours 0xRRGGBBAA */
+#define C_BG        0x141416FF
+#define C_BAR       0x222224FF
+#define C_DIV       0x333336FF
+#define C_TEXT      0xF2F2F4FF
+#define C_MUTED     0x8A8A90FF
+#define C_BTN       0x38383CFF
+#define C_BTN_HOV   0x505056FF
+#define C_BTN_BRD   0x555558FF
+#define C_ACT_BG    0x061830FF
+#define C_ACT       0x0A84FFFF
+#define C_GREEN     0x32D74BFF
+#define C_GREEN_BG  0x0C2216FF
+#define C_RED       0xFF3B30FF
+#define C_RED_BG    0x2A0C0CFF
 
-/* bytes per pixel */
 typedef enum { MODE_8G=0, MODE_RGB=1, MODE_RGBA=2, MODE_16G=3, MODE_COUNT } PixelMode;
 static const char *MODE_NAMES[] = {"8G","RGB","RGBA","16G"};
 static const int   MODE_BPP[]   = {1,3,4,2};
 
-/* audio */
 #define AUDIO_RATE  11025
 #define AUDIO_BUF   512
 #define MAX_GAIN    0.22f
-
-/* waterfall */
-#define VIEW_W_PX   128 
-#define PIXEL_H       3 
 
 /* 5x7 bitmap font */
 static const Uint8 F57[][5]={
@@ -95,132 +91,43 @@ static void draw_str(SDL_Renderer*r,int x,int y,const char*s,int sc,Uint32 col){
 }
 static int str_w(const char*s,int sc){return(int)strlen(s)*6*sc;}
 
-/* state */
-static Uint8  *g_data   = NULL;
-static size_t  g_size   = 0;
-static char    g_name[256] = "";
+/* State */
+typedef struct {
+    Uint8 *data;
+    size_t size;
+    char name[256];
 
-static int       g_playing  = 0;
-static double    g_pos      = 0.0;
-static double    g_speed    = 1.0;
-static int       g_scroll_y = 0;
-static PixelMode g_mode     = MODE_RGB;
+    SDL_atomic_t playing;
+    double pos;
+    double speed;
+    int scroll_y;
+    PixelMode mode;
+    int view_w_px; // Dynamic zoom
 
-static SDL_AudioDeviceID g_adev      = 0;
-static volatile size_t   g_audio_pos = 0;
-static double g_audio_accum = 0.0;
+    SDL_AudioDeviceID adev;
+    volatile size_t audio_pos; // Safe single-writer single-reader lock-free
+    double audio_accum;
 
-static int    g_show_help    = 0;
-static int    g_scr_drag     = 0;
-static int    g_scr_drag_y   = 0;
-static double g_scr_drag_pos = 0;
+    int show_help;
+    int scr_drag;
+    int scr_drag_y;
+    double scr_drag_pos;
 
-static char   g_flash[160]  = "";
-static Uint32 g_flash_until = 0;
-static int    g_flash_ok    = 1;
+    char flash[160];
+    Uint32 flash_until;
+    int flash_ok;
 
-static SDL_Rect g_vol_slider = {0,0,0,0};
-static int   g_vol_drag = 0;
-static float g_vol_norm = 0.4f;
-static int   g_muted    = 0;
+    SDL_Rect vol_slider;
+    int vol_drag;
+    float vol_norm;
+    int muted;
 
-/* audio */
-static void audio_cb(void*ud, Uint8*stream, int len){
-    (void)ud;
-    Sint16* out = (Sint16*)stream;
-    int n = len/2;
+    SDL_Texture *wf_tex;
+    int wf_tex_w, wf_tex_h;
 
-    if(!g_data || g_size==0 || !g_playing){
-        SDL_memset(stream, 0, len);
-        return;
-    }
-
-    float gain = g_muted ? 0.0f : (g_vol_norm * MAX_GAIN);
-    double speed = g_speed;
-    if(speed < 0.001) speed = 0.001;
-
-    for(int i=0; i<n; i++){
-        if(g_audio_pos >= g_size){
-            out[i]=0;
-            continue;
-        }
-        Sint16 s = (Sint16)(((int)g_data[g_audio_pos] - 128) << 8);
-        out[i] = (Sint16)(s * gain);
-
-        g_audio_accum += speed;
-        while(g_audio_accum >= 1.0 && g_audio_pos < g_size){
-            g_audio_pos++;
-            g_audio_accum -= 1.0;
-        }
-    }
-}
-
-static void audio_init(void){
-    SDL_AudioSpec want={0},got;
-    want.freq=AUDIO_RATE;want.format=AUDIO_S16SYS;
-    want.channels=1;want.samples=AUDIO_BUF;want.callback=audio_cb;
-    g_adev=SDL_OpenAudioDevice(NULL,0,&want,&got,0);
-    if(g_adev)SDL_PauseAudioDevice(g_adev,0);
-}
-
-static void do_flash(const char*m,int ok,int ms){
-    snprintf(g_flash,sizeof(g_flash),"%s",m);
-    g_flash_ok=ok;g_flash_until=SDL_GetTicks()+ms;
-}
-static void load_file(const char*path){
-    FILE*fp=fopen(path,"rb");
-    if(!fp){do_flash("Cannot open file",0,3000);return;}
-    fseek(fp,0,SEEK_END);long sz=ftell(fp);fseek(fp,0,SEEK_SET);
-    if(sz<0){fclose(fp);do_flash("Cannot read file",0,3000);return;}
-    Uint8*nd=(Uint8*)malloc(sz?(size_t)sz:1);
-    if(!nd){fclose(fp);do_flash("Out of memory",0,3000);return;}
-    if(sz>0 && fread(nd,1,(size_t)sz,fp)!=(size_t)sz){
-        free(nd);fclose(fp);do_flash("Read error",0,3000);return;
-    }
-    fclose(fp);
-    if(g_data)free(g_data);
-    g_data=nd; g_size=(size_t)sz;
-    const char*b=path;
-    const char*sl=strrchr(path,'/'),*bs=strrchr(path,'\\');
-    if(sl&&sl>=b)b=sl+1;if(bs&&bs>=b)b=bs+1;
-    snprintf(g_name,sizeof(g_name),"%s",b);
-    g_pos=0;g_scroll_y=0;g_playing=1;g_audio_pos=0;g_audio_accum=0.0;
-    char buf[64];
-    if(g_size>=(size_t)(1<<20)) snprintf(buf,sizeof(buf),"Loaded %.1f MB",(double)g_size/(1<<20));
-    else if(g_size>=1024)       snprintf(buf,sizeof(buf),"Loaded %.1f KB",(double)g_size/1024);
-    else                         snprintf(buf,sizeof(buf),"Loaded %zu B",g_size);
-    do_flash(buf,1,2500);
-}
-
-static int row_stride(void){return VIEW_W_PX*MODE_BPP[g_mode];}
-
-static void decode_row(size_t byte_start,Uint8*out_rgba){
-    int bpp=MODE_BPP[g_mode];
-    for(int col=0;col<VIEW_W_PX;col++){
-        Uint8 rv=0,gv=0,bv=0;
-        size_t bi=byte_start+(size_t)col*bpp;
-        switch(g_mode){
-            case MODE_8G:  if(bi<g_size)rv=gv=bv=g_data[bi]; break;
-            case MODE_RGB:
-            case MODE_RGBA:
-                if(bi+0<g_size)rv=g_data[bi+0];
-                if(bi+1<g_size)gv=g_data[bi+1];
-                if(bi+2<g_size)bv=g_data[bi+2]; break;
-            case MODE_16G:{
-                Uint16 v=0;
-                if(bi+0<g_size)v =(Uint16)(g_data[bi+0]<<8);
-                if(bi+1<g_size)v|=(Uint16)(g_data[bi+1]);
-                rv=gv=bv=(Uint8)(v>>8); break;
-            }
-            default: break;
-        }
-        out_rgba[col*4+0]=rv;out_rgba[col*4+1]=gv;
-        out_rgba[col*4+2]=bv;out_rgba[col*4+3]=255;
-    }
-}
-
-/* buttons / layout */
-#define SB_H   30
+    char tooltip[128];
+    int tooltip_x, tooltip_y;
+} AppState;
 
 #define BID_8G    0
 #define BID_RGB   1
@@ -238,12 +145,112 @@ static Btn g_btns[BID_COUNT];
 static int g_hov[BID_COUNT];
 static SDL_Rect g_speed_pos;
 
+static void do_flash(AppState *app, const char*m,int ok,int ms){
+    snprintf(app->flash,sizeof(app->flash),"%s",m);
+    app->flash_ok=ok;app->flash_until=SDL_GetTicks()+ms;
+}
+
+static void audio_cb(void*ud, Uint8*stream, int len){
+    AppState *app = (AppState*)ud;
+    Sint16* out = (Sint16*)stream;
+    int n = len/2;
+
+    if(!app->data || app->size==0 || !SDL_AtomicGet(&app->playing)){
+        SDL_memset(stream, 0, len);
+        return;
+    }
+
+    float gain = app->muted ? 0.0f : (app->vol_norm * MAX_GAIN);
+    double speed = app->speed;
+    if(speed < 0.001) speed = 0.001;
+
+    for(int i=0; i<n; i++){
+        double exact_pos = (double)app->audio_pos + app->audio_accum;
+        size_t p1 = (size_t)exact_pos;
+        size_t p2 = p1 + 1;
+        float frac = exact_pos - (double)p1;
+
+        Sint16 s1 = (p1 < app->size) ? (Sint16)(((int)app->data[p1] - 128) << 8) : 0;
+        Sint16 s2 = (p2 < app->size) ? (Sint16)(((int)app->data[p2] - 128) << 8) : 0;
+        
+        // Linear interpolation
+        Sint16 s = (Sint16)(s1 + (s2 - s1) * frac);
+        out[i] = (Sint16)(s * gain);
+
+        app->audio_accum += speed;
+        int steps = (int)app->audio_accum;
+        if(steps > 0) {
+            app->audio_pos += steps;
+            app->audio_accum -= steps;
+        }
+    }
+}
+
+static void audio_init(AppState *app){
+    SDL_AudioSpec want={0},got;
+    want.freq=AUDIO_RATE;want.format=AUDIO_S16SYS;
+    want.channels=1;want.samples=AUDIO_BUF;want.callback=audio_cb;
+    want.userdata = app;
+    app->adev=SDL_OpenAudioDevice(NULL,0,&want,&got,0);
+    if(app->adev)SDL_PauseAudioDevice(app->adev,0);
+}
+
+static void load_file(AppState *app, const char*path){
+    FILE*fp=fopen(path,"rb");
+    if(!fp){do_flash(app,"Cannot open file",0,3000);return;}
+    fseek(fp,0,SEEK_END);long sz=ftell(fp);fseek(fp,0,SEEK_SET);
+    if(sz<0){fclose(fp);do_flash(app,"Cannot read file",0,3000);return;}
+    Uint8*nd=(Uint8*)malloc(sz?(size_t)sz:1);
+    if(!nd){fclose(fp);do_flash(app,"Out of memory",0,3000);return;}
+    if(sz>0 && fread(nd,1,(size_t)sz,fp)!=(size_t)sz){
+        free(nd);fclose(fp);do_flash(app,"Read error",0,3000);return;
+    }
+    fclose(fp);
+    if(app->data)free(app->data);
+    app->data=nd; app->size=(size_t)sz;
+    const char*b=path;
+    const char*sl=strrchr(path,'/'),*bs=strrchr(path,'\\');
+    if(sl&&sl>=b)b=sl+1;if(bs&&bs>=b)b=bs+1;
+    snprintf(app->name,sizeof(app->name),"%s",b);
+    app->pos=0;app->scroll_y=0;
+    SDL_AtomicSet(&app->playing, 1);
+    app->audio_pos = 0;
+    app->audio_accum=0.0;
+    char buf[64];
+    if(app->size>=(size_t)(1<<20)) snprintf(buf,sizeof(buf),"Loaded %.1f MB",(double)app->size/(1<<20));
+    else if(app->size>=1024)       snprintf(buf,sizeof(buf),"Loaded %.1f KB",(double)app->size/1024);
+    else                         snprintf(buf,sizeof(buf),"Loaded %zu B",app->size);
+    do_flash(app,buf,1,2500);
+}
+
+static size_t row_stride(AppState *app){return (size_t)app->view_w_px * MODE_BPP[app->mode];}
+
+static void decode_pixel(AppState *app, size_t byte_idx, Uint8 *r, Uint8 *g, Uint8 *b){
+    Uint8 rv=0,gv=0,bv=0;
+    switch(app->mode){
+        case MODE_8G:  if(byte_idx<app->size)rv=gv=bv=app->data[byte_idx]; break;
+        case MODE_RGB:
+        case MODE_RGBA:
+            if(byte_idx+0<app->size)rv=app->data[byte_idx+0];
+            if(byte_idx+1<app->size)gv=app->data[byte_idx+1];
+            if(byte_idx+2<app->size)bv=app->data[byte_idx+2]; break;
+        case MODE_16G:{
+            Uint16 v=0;
+            if(byte_idx+0<app->size)v =(Uint16)(app->data[byte_idx+0]<<8);
+            if(byte_idx+1<app->size)v|=(Uint16)(app->data[byte_idx+1]);
+            rv=gv=bv=(Uint8)(v>>8); break;
+        }
+        default: break;
+    }
+    *r=rv; *g=gv; *b=bv;
+}
+
 static int in_rect(int mx,int my,SDL_Rect b){
     return mx>=b.x&&mx<b.x+b.w&&my>=b.y&&my<b.y+b.h;
 }
 static void draw_btn(SDL_Renderer*r,SDL_Rect b,const char*lbl,int hov,int active){
     Uint32 bg=active?C_ACT_BG:(hov?C_BTN_HOV:C_BTN);
-    Uint32 brd=active?C_ACT:(hov?0x8888aaff:C_BTN_BRD);
+    Uint32 brd=active?C_ACT:(hov?0x8888AAFF:C_BTN_BRD);
     Uint32 fg=active?C_ACT:C_TEXT;
     fill_rect(r,b.x,b.y,b.w,b.h,bg);
     draw_border(r,b.x,b.y,b.w,b.h,brd);
@@ -251,7 +258,7 @@ static void draw_btn(SDL_Renderer*r,SDL_Rect b,const char*lbl,int hov,int active
     draw_str(r,b.x+(b.w-tw)/2,b.y+(b.h-14)/2,lbl,2,fg);
 }
 
-static void layout_all(int ww,int wh){
+static void layout_all(AppState *app, int ww,int wh){
     int rowA_y = wh-BOT_H+8;
     int rowB_y = rowA_y+SB_H+8;
 
@@ -263,13 +270,12 @@ static void layout_all(int ww,int wh){
     }
 
     int vol_label_w = str_w("VOL",2);
-    int vol_x = x+14;
-    int vol_label_x = vol_x;
+    int vol_label_x = x+14;
     int slider_w = 90, slider_h = 10;
-    g_vol_slider.x = vol_label_x+vol_label_w+8;
-    g_vol_slider.y = rowA_y+(SB_H-slider_h)/2;
-    g_vol_slider.w = slider_w;
-    g_vol_slider.h = slider_h;
+    app->vol_slider.x = vol_label_x+vol_label_w+8;
+    app->vol_slider.y = rowA_y+(SB_H-slider_h)/2;
+    app->vol_slider.w = slider_w;
+    app->vol_slider.h = slider_h;
 
     int help_w = str_w("?",2)+18;
     int mute_w = str_w("MUTE",2)+18;
@@ -291,104 +297,166 @@ static void layout_all(int ww,int wh){
     g_speed_pos.y = rowB_y;
 }
 
-static void draw_waterfall(SDL_Renderer*ren,int ww,int wh){
+static void draw_waterfall(SDL_Renderer*ren, AppState *app, int ww,int wh){
     int vx=0,vy=BAR_H,vw=ww-SCR_W,vh=wh-BAR_H-BOT_H;
     if(vh<=0||vw<=0)return;
 
-    int stride=row_stride();
+    size_t stride=row_stride(app);
 
     if(stride>0){
-        double rowf = g_pos/(double)stride;
+        double rowf = app->pos/(double)stride;
         double frac = rowf - floor(rowf);
-        g_scroll_y = (int)(frac*(double)PIXEL_H);
+        app->scroll_y = (int)(frac*(double)PIXEL_H);
     } else {
-        g_scroll_y = 0;
+        app->scroll_y = 0;
     }
 
-    float scale=(float)vw/(float)VIEW_W_PX;
-    int cell_h=PIXEL_H;
-    int rows=vh/cell_h+2;
-    size_t base=(size_t)g_pos;
+    int rows=vh/PIXEL_H+2;
+    size_t base=(size_t)app->pos;
     base=(stride>0)?(base/stride)*stride:0;
 
-    SDL_Rect clip={vx,vy,vw,vh}; SDL_RenderSetClipRect(ren,&clip);
-
-    static Uint8*rowbuf=NULL; static int rowbuf_w=0;
-    if(rowbuf_w!=VIEW_W_PX){
-        if(rowbuf)free(rowbuf);
-        rowbuf=(Uint8*)malloc(VIEW_W_PX*4); rowbuf_w=VIEW_W_PX;
+    // Dynamic Texture Rendering
+    if(!app->wf_tex || app->wf_tex_w != vw || app->wf_tex_h != vh){
+        if(app->wf_tex) SDL_DestroyTexture(app->wf_tex);
+        app->wf_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, vw, vh);
+        app->wf_tex_w = vw; app->wf_tex_h = vh;
     }
 
-    for(int row=0;row<rows;row++){
+    void *pixels;
+    int pitch;
+    SDL_LockTexture(app->wf_tex, NULL, &pixels, &pitch);
+    Uint32 *px = (Uint32*)pixels;
+
+    for(int row=0; row<rows; row++){
         int rfb=rows-1-row;
-        int yp=vy+row*cell_h-g_scroll_y;
-        if(yp+cell_h<=vy||yp>vy+vh)continue;
+        int yp=row*PIXEL_H-app->scroll_y;
+        if(yp+PIXEL_H<=0||yp>=vh)continue;
+        
         float age=1.0f-(float)rfb/(float)(rows>1?rows-1:1);
-        long long bs=(long long)base-(long long)rfb*stride;
-        if(bs<0){ fill_rect(ren,vx,yp,vw,cell_h,C_BG); continue; }
-        decode_row((size_t)bs,rowbuf);
-        for(int col=0;col<VIEW_W_PX;col++){
-            Uint8 rv=(Uint8)(rowbuf[col*4+0]*age);
-            Uint8 gv=(Uint8)(rowbuf[col*4+1]*age);
-            Uint8 bv=(Uint8)(rowbuf[col*4+2]*age);
-            int px=(int)(col*scale);
-            int pw=(int)((col+1)*scale)-px; if(pw<1)pw=1;
-            SDL_SetRenderDrawColor(ren,rv,gv,bv,255);
-            SDL_Rect rc={vx+px,yp,pw,cell_h}; SDL_RenderFillRect(ren,&rc);
+        long long bs=(long long)base-(long long)rfb*(long long)stride;
+        
+        if(bs<0){
+            for(int py=yp; py<yp+PIXEL_H && py<vh; py++){
+                if(py<0) continue;
+                for(int x=0; x<vw; x++) px[py * (pitch/4) + x] = 0xFF161414; // C_BG
+            }
+            continue;
+        }
+
+        for(int x=0; x<vw; x++){
+            int src_col = (int)((double)x * app->view_w_px / (double)vw);
+            if(src_col >= app->view_w_px) src_col = app->view_w_px - 1;
+            
+            size_t bi = (size_t)bs + (size_t)src_col * MODE_BPP[app->mode];
+            Uint8 r, g, b;
+            decode_pixel(app, bi, &r, &g, &b);
+            
+            r = (Uint8)(r * age);
+            g = (Uint8)(g * age);
+            b = (Uint8)(b * age);
+
+            Uint32 color = r | (g << 8) | (b << 16) | (0xFF << 24);
+            for(int py=yp; py<yp+PIXEL_H && py<vh; py++){
+                if(py<0) continue;
+                px[py * (pitch/4) + x] = color;
+            }
         }
     }
+    SDL_UnlockTexture(app->wf_tex);
+    
+    SDL_Rect dst = {vx, vy, vw, vh};
+    SDL_RenderCopy(ren, app->wf_tex, NULL, &dst);
 
-    set_col(ren,0xffffff28);
-    SDL_RenderDrawLine(ren,vx,vy+vh-cell_h,vx+vw,vy+vh-cell_h);
-    SDL_RenderSetClipRect(ren,NULL);
+    set_col(ren, 0x28FFFFFF);
+    SDL_RenderDrawLine(ren,vx,vy+vh-PIXEL_H,vx+vw,vy+vh-PIXEL_H);
 
-    if(g_size>0){
+    if(app->size>0){
         int bx=0,by=vy+vh,bw=vw,bh=2;
         fill_rect(ren,bx,by,bw,bh,C_BTN);
-        int filled=(int)((double)bw*(g_pos/(double)g_size));
+        int filled=(int)((double)bw*(app->pos/(double)app->size));
         if(filled>bw)filled=bw;
         fill_rect(ren,bx,by,filled,bh,C_ACT);
     }
 
+    // Minimap Scrollbar
     int sx=ww-SCR_W,sy=vy,sh=vh;
-    fill_rect(ren,sx,sy,SCR_W,sh,0x1e1e20ff);
-    if(g_size>0){
+    fill_rect(ren,sx,sy,SCR_W,sh,0x1E1E20FF);
+    
+    if(app->size>0 && stride>0){
+        for(int y=0; y<sh; y++){
+            double frac = (double)y / (double)sh;
+            size_t offset = (size_t)(frac * (double)app->size);
+            offset = (offset / stride) * stride;
+            Uint8 r,g,b;
+            decode_pixel(app, offset, &r, &g, &b);
+            SDL_SetRenderDrawColor(ren, r, g, b, 255);
+            SDL_RenderDrawLine(ren, sx+2, sy+y, sx+SCR_W-3, sy+y);
+        }
+    }
+
+    if(app->size>0){
         int thumb_h=sh/8; if(thumb_h<24)thumb_h=24; if(thumb_h>sh)thumb_h=sh;
-        double frac=g_pos/(double)g_size;
+        double frac=app->pos/(double)app->size;
         int thumb_y=sy+(int)(frac*(sh-thumb_h));
         if(thumb_y<sy)thumb_y=sy;
         if(thumb_y+thumb_h>sy+sh)thumb_y=sy+sh-thumb_h;
         int mx2,my2; SDL_GetMouseState(&mx2,&my2);
         int on_thumb=(mx2>=sx&&mx2<sx+SCR_W&&my2>=thumb_y&&my2<thumb_y+thumb_h);
-        fill_rect(ren,sx+2,thumb_y,SCR_W-4,thumb_h,(g_scr_drag||on_thumb)?0x6060aaff:0x44444aff);
+        fill_rect(ren,sx+1,thumb_y,SCR_W-2,thumb_h,(app->scr_drag||on_thumb)?0x6060AAFF:0x44444AFF);
+        draw_border(ren,sx+1,thumb_y,SCR_W-2,thumb_h,0xAAAAAAFF);
+    }
+
+    // Tooltip Generation
+    int mx, my;
+    SDL_GetMouseState(&mx, &my);
+    if(mx < vw && my >= vy && my < vy+vh && app->data) {
+        int src_col = (int)((double)mx * app->view_w_px / (double)vw);
+        if(src_col >= app->view_w_px) src_col = app->view_w_px - 1;
+        int rfb = (vh - 1 - (my - vy) + app->scroll_y) / PIXEL_H;
+        size_t byte_off = base - (size_t)rfb * stride + (size_t)src_col * MODE_BPP[app->mode];
+        
+        if(byte_off < app->size) {
+            int bpp = MODE_BPP[app->mode];
+            char hex[32] = {0};
+            for(int i=0; i<bpp && byte_off+i < app->size; i++) {
+                sprintf(hex + strlen(hex), "%02X ", app->data[byte_off + i]);
+            }
+            snprintf(app->tooltip, sizeof(app->tooltip), "Off: 0x%08zX | %s", byte_off, hex);
+            app->tooltip_x = mx + 12;
+            app->tooltip_y = my - 8;
+        } else {
+            app->tooltip[0] = 0;
+        }
+    } else {
+        app->tooltip[0] = 0;
     }
 }
 
-static void draw_volume(SDL_Renderer*ren,int rowA_y){
+static void draw_volume(SDL_Renderer*ren, AppState *app, int rowA_y){
     int label_x = g_btns[BID_16G].r.x+g_btns[BID_16G].r.w+14;
-    Uint32 lc = g_muted? C_MUTED : C_TEXT;
+    Uint32 lc = app->muted? C_MUTED : C_TEXT;
     draw_str(ren,label_x,rowA_y+(SB_H-14)/2,"VOL",2,lc);
 
-    fill_rect(ren,g_vol_slider.x,g_vol_slider.y,g_vol_slider.w,g_vol_slider.h,C_BTN);
-    draw_border(ren,g_vol_slider.x-1,g_vol_slider.y-1,g_vol_slider.w+2,g_vol_slider.h+2,C_BTN_BRD);
-    int filled=(int)(g_vol_norm*g_vol_slider.w);
-    fill_rect(ren,g_vol_slider.x,g_vol_slider.y,filled,g_vol_slider.h,g_muted?C_MUTED:C_ACT);
-    int knob_x = g_vol_slider.x+filled-3;
-    fill_rect(ren,knob_x,g_vol_slider.y-3,6,g_vol_slider.h+6,g_muted?C_MUTED:C_TEXT);
+    fill_rect(ren,app->vol_slider.x,app->vol_slider.y,app->vol_slider.w,app->vol_slider.h,C_BTN);
+    draw_border(ren,app->vol_slider.x-1,app->vol_slider.y-1,app->vol_slider.w+2,app->vol_slider.h+2,C_BTN_BRD);
+    int filled=(int)(app->vol_norm*app->vol_slider.w);
+    fill_rect(ren,app->vol_slider.x,app->vol_slider.y,filled,app->vol_slider.h,app->muted?C_MUTED:C_ACT);
+    int knob_x = app->vol_slider.x+filled-3;
+    fill_rect(ren,knob_x,app->vol_slider.y-3,6,app->vol_slider.h+6,app->muted?C_MUTED:C_TEXT);
 }
 
 static void draw_help(SDL_Renderer*r,int ww,int wh){
     SDL_SetRenderDrawBlendMode(r,SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(r,0x14,0x14,0x16,0xd0);
+    SDL_SetRenderDrawColor(r,0x14,0x14,0x16,0xD0);
     SDL_Rect full={0,0,ww,wh}; SDL_RenderFillRect(r,&full);
     SDL_SetRenderDrawBlendMode(r,SDL_BLENDMODE_NONE);
 
-    int pw=380,ph=260,px=(ww-pw)/2,py=(wh-ph)/2;
+    int pw=380,ph=300,px=(ww-pw)/2,py=(wh-ph)/2;
     fill_rect(r,px,py,pw,ph,C_BAR);
     draw_border(r,px,py,pw,ph,C_DIV);
-    draw_border(r,px+1,py+1,pw-2,ph-2,0x444448ff);
+    draw_border(r,px+1,py+1,pw-2,ph-2,0x444448FF);
 
-    const char*title="Keyboard Shortcuts";
+    const char*title="Controls & Shortcuts";
     draw_str(r,px+(pw-str_w(title,2))/2,py+14,title,2,C_TEXT);
     fill_rect(r,px+12,py+34,pw-24,1,C_DIV);
 
@@ -397,12 +465,13 @@ static void draw_help(SDL_Renderer*r,int ww,int wh){
         {"R",           "Restart"},
         {"M",           "Mute / Unmute"},
         {"Up / Down",   "Speed x2 / x0.5"},
-        {"Mouse Wheel", "Scroll / Seek"},
-        {"Scrollbar",   "Click or drag to seek"},
+        {"Wheel",       "Scroll / Seek"},
+        {"Ctrl+Wheel",  "Zoom In / Out"},
+        {"Scroll Drag", "Click track to jump"},
         {"Drag & Drop", "Load any file"},
     };
     int ny=py+46;
-    for(int i=0;i<7;i++){
+    for(int i=0;i<8;i++){
         draw_str(r,px+18,ny,keys[i][0],1,C_ACT);
         draw_str(r,px+160,ny,keys[i][1],1,C_MUTED);
         ny+=22;
@@ -412,6 +481,13 @@ static void draw_help(SDL_Renderer*r,int ww,int wh){
 }
 
 int main(int argc,char**argv){
+    AppState app = {0};
+    app.view_w_px = 128;
+    app.vol_norm = 0.4f;
+    app.speed = 1.0;
+    SDL_AtomicSet(&app.playing, 0);
+    app.audio_pos = 0;
+
     SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO);
     SDL_Window*win=SDL_CreateWindow("Bytefall",
         SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,WIN_W,WIN_H,
@@ -421,15 +497,15 @@ int main(int argc,char**argv){
         SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
     SDL_SetRenderDrawBlendMode(ren,SDL_BLENDMODE_BLEND);
 
-    audio_init();
-    if(argc>=2)load_file(argv[1]);
+    audio_init(&app);
+    if(argc>=2)load_file(&app,argv[1]);
 
     int running=1; SDL_Event ev;
     while(running){
         int mx,my; SDL_GetMouseState(&mx,&my);
         int ww,wh; SDL_GetWindowSize(win,&ww,&wh);
 
-        layout_all(ww,wh);
+        layout_all(&app,ww,wh);
         for(int i=0;i<BID_COUNT;i++)
             g_hov[i]=in_rect(mx,my,g_btns[i].r);
 
@@ -437,158 +513,191 @@ int main(int argc,char**argv){
             if(ev.type==SDL_QUIT) running=0;
 
             if(ev.type==SDL_KEYDOWN){
-                if(g_show_help){
+                if(app.show_help){
                     if(ev.key.keysym.sym==SDLK_ESCAPE||ev.key.keysym.sym==SDLK_SLASH
                        ||ev.key.keysym.sym==SDLK_QUESTION||ev.key.keysym.sym==SDLK_h)
-                        g_show_help=0;
+                        app.show_help=0;
                 } else {
                     switch(ev.key.keysym.sym){
                         case SDLK_ESCAPE: case SDLK_q: running=0; break;
-                        case SDLK_SPACE:  g_playing=!g_playing; break;
-                        case SDLK_r:      g_pos=0;g_audio_pos=0;g_audio_accum=0.0;g_playing=1; break;
-                        case SDLK_m:      g_muted=!g_muted; break;
-                        case SDLK_h: case SDLK_SLASH: g_show_help=!g_show_help; break;
-                        case SDLK_UP:   g_speed*=2.0;if(g_speed>32)g_speed=32; break;
-                        case SDLK_DOWN: g_speed*=0.5;if(g_speed<0.125)g_speed=0.125; break;
+                        case SDLK_SPACE:  SDL_AtomicSet(&app.playing, !SDL_AtomicGet(&app.playing)); break;
+                        case SDLK_r:      app.pos=0; app.audio_pos=0; app.audio_accum=0.0; SDL_AtomicSet(&app.playing, 1); break;
+                        case SDLK_m:      app.muted=!app.muted; break;
+                        case SDLK_h: case SDLK_SLASH: app.show_help=!app.show_help; break;
+                        case SDLK_UP:   app.speed*=2.0;if(app.speed>32)app.speed=32; break;
+                        case SDLK_DOWN: app.speed*=0.5;if(app.speed<0.125)app.speed=0.125; break;
                     }
                 }
             }
 
             if(ev.type==SDL_MOUSEBUTTONDOWN&&ev.button.button==SDL_BUTTON_LEFT){
                 int bx=ev.button.x,by=ev.button.y;
-                if(g_show_help){
-                    g_show_help=0;
-                } else if(in_rect(bx,by,g_vol_slider)){
-                    g_vol_drag=1;
-                    float v=(float)(bx-g_vol_slider.x)/(float)g_vol_slider.w;
+                if(app.show_help){
+                    app.show_help=0;
+                } else if(in_rect(bx,by,app.vol_slider)){
+                    app.vol_drag=1;
+                    float v=(float)(bx-app.vol_slider.x)/(float)app.vol_slider.w;
                     if(v<0)v=0; if(v>1)v=1;
-                    g_vol_norm=v;
+                    app.vol_norm=v;
                 } else {
                     int vy=BAR_H,vh=wh-BAR_H-BOT_H,sx=ww-SCR_W;
                     int handled=0;
-                    if(bx>=sx&&g_size>0){
+                    if(bx>=sx&&app.size>0){
                         handled=1;
                         int sh=vh;
                         int thumb_h=sh/8; if(thumb_h<24)thumb_h=24;
-                        int thumb_y=vy+(int)((g_pos/(double)g_size)*(sh-thumb_h));
+                        int thumb_y=vy+(int)((app.pos/(double)app.size)*(sh-thumb_h));
+                        
                         if(by>=thumb_y&&by<thumb_y+thumb_h){
-                            g_scr_drag=1;g_scr_drag_y=by;g_scr_drag_pos=g_pos;
+                            app.scr_drag=1;app.scr_drag_y=by;app.scr_drag_pos=app.pos;
                         } else {
                             double nf=(double)(by-vy)/(double)sh;
                             if(nf<0)nf=0;if(nf>1)nf=1;
-                            g_pos=nf*(double)g_size;g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;
+                            app.pos=nf*(double)app.size;
+                            app.audio_pos=(size_t)app.pos;
+                            app.audio_accum=0.0;
+                            
+                            app.scr_drag=1;
+                            app.scr_drag_y = by;
+                            app.scr_drag_pos = app.pos;
                         }
                     }
                     if(!handled){
-                        if(g_hov[BID_PLAY]) g_playing=!g_playing;
-                        if(g_hov[BID_RW]){int s=row_stride();g_pos-=s*30;if(g_pos<0)g_pos=0;g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;}
-                        if(g_hov[BID_FF]&&g_size){int s=row_stride();g_pos+=s*30;if(g_pos>(double)g_size)g_pos=(double)g_size;g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;}
-                        if(g_hov[BID_MUTE]) g_muted=!g_muted;
-                        if(g_hov[BID_HELP]) g_show_help=!g_show_help;
-                        for(int m=0;m<4;m++) if(g_hov[BID_8G+m]) g_mode=(PixelMode)m;
+                        if(g_hov[BID_PLAY]) SDL_AtomicSet(&app.playing, !SDL_AtomicGet(&app.playing));
+                        if(g_hov[BID_RW]){size_t s=row_stride(&app);app.pos-=(double)s*30;if(app.pos<0)app.pos=0;app.audio_pos=(size_t)app.pos;app.audio_accum=0.0;}
+                        if(g_hov[BID_FF]&&app.size){size_t s=row_stride(&app);app.pos+=(double)s*30;if(app.pos>(double)app.size)app.pos=(double)app.size;app.audio_pos=(size_t)app.pos;app.audio_accum=0.0;}
+                        if(g_hov[BID_MUTE]) app.muted=!app.muted;
+                        if(g_hov[BID_HELP]) app.show_help=!app.show_help;
+                        for(int m=0;m<4;m++) if(g_hov[BID_8G+m]) app.mode=(PixelMode)m;
                     }
                 }
             }
 
             if(ev.type==SDL_MOUSEBUTTONUP&&ev.button.button==SDL_BUTTON_LEFT){
-                g_scr_drag=0;
-                g_vol_drag=0;
+                app.scr_drag=0;
+                app.vol_drag=0;
             }
 
             if(ev.type==SDL_MOUSEMOTION){
-                if(g_vol_drag){
-                    float v=(float)(ev.motion.x-g_vol_slider.x)/(float)g_vol_slider.w;
+                if(app.vol_drag){
+                    float v=(float)(ev.motion.x-app.vol_slider.x)/(float)app.vol_slider.w;
                     if(v<0)v=0; if(v>1)v=1;
-                    g_vol_norm=v;
+                    app.vol_norm=v;
                 }
-                if(g_scr_drag&&g_size>0){
+                if(app.scr_drag&&app.size>0){
                     int sh=wh-BAR_H-BOT_H;
                     int thumb_h=sh/8; if(thumb_h<24)thumb_h=24;
                     if(sh-thumb_h>0){
-                        double delta=(double)(ev.motion.y-g_scr_drag_y)/(double)(sh-thumb_h);
-                        g_pos=g_scr_drag_pos+delta*(double)g_size;
-                        if(g_pos<0)g_pos=0;
-                        if(g_pos>(double)g_size)g_pos=(double)g_size;
-                        g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;
+                        double delta=(double)(ev.motion.y-app.scr_drag_y)/(double)(sh-thumb_h);
+                        app.pos=app.scr_drag_pos+delta*(double)app.size;
+                        if(app.pos<0)app.pos=0;
+                        if(app.pos>(double)app.size)app.pos=(double)app.size;
+                        app.audio_pos=(size_t)app.pos;
+                        app.audio_accum=0.0;
                     }
                 }
             }
 
-            if(ev.type==SDL_MOUSEWHEEL&&!g_show_help){
-                int s=row_stride();
-                g_pos-=ev.wheel.y*s*5;
-                if(g_pos<0)g_pos=0;
-                if(g_pos>(double)g_size)g_pos=(double)g_size;
-                g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;
+            if(ev.type==SDL_MOUSEWHEEL&&!app.show_help){
+                if(SDL_GetModState() & KMOD_CTRL) {
+                    app.view_w_px -= ev.wheel.y * 16;
+                    if(app.view_w_px < 32) app.view_w_px = 32;          // you can set 16 but it's kinda buggy, i will fix..
+                    if(app.view_w_px > 2048) app.view_w_px = 2048;
+                } else {
+                    size_t s=row_stride(&app);
+                    app.pos-=(double)ev.wheel.y*s*5;
+                    if(app.pos<0)app.pos=0;
+                    if(app.pos>(double)app.size)app.pos=(double)app.size;
+                    app.audio_pos=(size_t)app.pos;
+                    app.audio_accum=0.0;
+                }
             }
-            if(ev.type==SDL_DROPFILE){load_file(ev.drop.file);SDL_free(ev.drop.file);}
+            if(ev.type==SDL_DROPFILE){load_file(&app,ev.drop.file);SDL_free(ev.drop.file);}
         }
 
-        if(g_playing&&g_data&&g_size>0&&!g_show_help){
-            g_pos=(double)g_audio_pos;
-            if(g_audio_pos>=g_size){
-                g_pos=(double)g_size;
-                g_playing=0;
-                do_flash("End of file",1,2000);
+        if(SDL_AtomicGet(&app.playing)&&app.data&&app.size>0&&!app.show_help){
+            app.pos=(double)app.audio_pos;
+            if(app.audio_pos>=app.size){
+                app.pos=(double)app.size;
+                SDL_AtomicSet(&app.playing, 0);
+                do_flash(&app,"End of file",1,2000);
             }
         }
 
         set_col(ren,C_BG); SDL_RenderClear(ren);
 
-        /* top bar */
         fill_rect(ren,0,0,ww,BAR_H,C_BAR);
         fill_rect(ren,0,BAR_H-1,ww,1,C_DIV);
-        if(g_name[0]){
-            int tw=str_w(g_name,2),tx=(ww-tw)/2; if(tx<8)tx=8;
-            draw_str(ren,tx,BAR_H/2-7,g_name,2,C_TEXT);
+        if(app.name[0]){
+            int tw=str_w(app.name,2),tx=(ww-tw)/2; if(tx<8)tx=8;
+            draw_str(ren,tx,BAR_H/2-7,app.name,2,C_TEXT);
             char sz[32];
-            if(g_size>=(size_t)(1<<20)) snprintf(sz,sizeof(sz),"%.1f MB",(double)g_size/(1<<20));
-            else if(g_size>=1024)       snprintf(sz,sizeof(sz),"%.1f KB",(double)g_size/1024);
-            else                         snprintf(sz,sizeof(sz),"%zu B",g_size);
+            if(app.size>=(size_t)(1<<20)) snprintf(sz,sizeof(sz),"%.1f MB",(double)app.size/(1<<20));
+            else if(app.size>=1024)       snprintf(sz,sizeof(sz),"%.1f KB",(double)app.size/1024);
+            else                         snprintf(sz,sizeof(sz),"%zu B",app.size);
             draw_str(ren,ww-str_w(sz,1)-10,BAR_H/2-3,sz,1,C_MUTED);
+            
+            char zbuf[32];
+            snprintf(zbuf, sizeof(zbuf), "W:%d", app.view_w_px);
+            draw_str(ren, 8, BAR_H/2-3, zbuf, 1, C_MUTED);
         }
 
-        draw_waterfall(ren,ww,wh);
-        if(!g_data){
+        draw_waterfall(ren,&app,ww,wh);
+        
+        if(!app.data){
             const char*m="Drop any file onto the window";
             draw_str(ren,(ww-str_w(m,1))/2,wh/2-3,m,1,C_MUTED);
         }
 
-        /* bottom bar */
         int rowA_y = wh-BOT_H+8;
         fill_rect(ren,0,wh-BOT_H,ww,BOT_H,C_BAR);
         fill_rect(ren,0,wh-BOT_H,ww,1,C_DIV);
 
         for(int m=0;m<4;m++)
-            draw_btn(ren,g_btns[BID_8G+m].r,MODE_NAMES[m],g_hov[BID_8G+m],(g_mode==m));
-        draw_volume(ren,rowA_y);
-        draw_btn(ren,g_btns[BID_MUTE].r,"MUTE",g_hov[BID_MUTE],g_muted);
-        draw_btn(ren,g_btns[BID_HELP].r,"?",   g_hov[BID_HELP],g_show_help);
+            draw_btn(ren,g_btns[BID_8G+m].r,MODE_NAMES[m],g_hov[BID_8G+m],(app.mode==m));
+        draw_volume(ren,&app,rowA_y);
+        draw_btn(ren,g_btns[BID_MUTE].r,"MUTE",g_hov[BID_MUTE],app.muted);
+        draw_btn(ren,g_btns[BID_HELP].r,"?",   g_hov[BID_HELP],app.show_help);
 
         draw_btn(ren,g_btns[BID_RW].r,  "<<",              g_hov[BID_RW],  0);
-        draw_btn(ren,g_btns[BID_PLAY].r,g_playing?"PAUSE":"PLAY",g_hov[BID_PLAY],g_playing);
+        draw_btn(ren,g_btns[BID_PLAY].r,SDL_AtomicGet(&app.playing)?"PAUSE":"PLAY",g_hov[BID_PLAY],SDL_AtomicGet(&app.playing));
         draw_btn(ren,g_btns[BID_FF].r,  ">>",              g_hov[BID_FF],  0);
 
-        char spbuf[16]; snprintf(spbuf,sizeof(spbuf),"x%.3g",g_speed);
+        char spbuf[16]; snprintf(spbuf,sizeof(spbuf),"x%.3g",app.speed);
         draw_str(ren,g_speed_pos.x,g_speed_pos.y+(SB_H-7)/2,spbuf,1,C_MUTED);
 
-        if(SDL_GetTicks()<g_flash_until){
-            Uint32 bc=g_flash_ok?C_GREEN_BG:C_RED_BG,tc=g_flash_ok?C_GREEN:C_RED;
-            int fw=str_w(g_flash,1)+24,fh=22;
+        if(SDL_GetTicks()<app.flash_until){
+            Uint32 bc=app.flash_ok?C_GREEN_BG:C_RED_BG,tc=app.flash_ok?C_GREEN:C_RED;
+            int fw=str_w(app.flash,1)+24,fh=22;
             int fx=ww-fw-10,fy=wh-BOT_H-fh-8;
             fill_rect(ren,fx,fy,fw,fh,bc);
             draw_border(ren,fx,fy,fw,fh,tc);
-            draw_str(ren,fx+12,fy+(fh-7)/2,g_flash,1,tc);
+            draw_str(ren,fx+12,fy+(fh-7)/2,app.flash,1,tc);
         }
 
-        if(g_show_help) draw_help(ren,ww,wh);
+        if(app.tooltip[0]) {
+            int tw = str_w(app.tooltip, 1) + 12;
+            int th = 16;
+            int tx = app.tooltip_x;
+            int ty = app.tooltip_y - th;
+            
+            if(tx + tw > ww - 5) tx = ww - tw - 5;
+            if(ty < BAR_H + 2) ty = app.tooltip_y + 12;
+            
+            fill_rect(ren, tx, ty, tw, th, 0x18181AFF);
+            draw_border(ren, tx, ty, tw, th, 0x44444AFF);
+            draw_str(ren, tx+6, ty+4, app.tooltip, 1, C_ACT);
+        }
+
+        if(app.show_help) draw_help(ren,ww,wh);
 
         SDL_RenderPresent(ren);
         SDL_Delay(8);
     }
 
-    if(g_adev)SDL_CloseAudioDevice(g_adev);
-    if(g_data)free(g_data);
+    if(app.adev)SDL_CloseAudioDevice(app.adev);
+    if(app.data)free(app.data);
+    if(app.wf_tex) SDL_DestroyTexture(app.wf_tex);
     SDL_DestroyRenderer(ren);SDL_DestroyWindow(win);SDL_Quit();
     return 0;
 }
