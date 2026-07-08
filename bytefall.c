@@ -5,18 +5,20 @@
 #include <math.h>
 
 /* layout */
-#define WIN_W  390
-#define WIN_H  560
-#define BAR_H   36
-#define BOT_H   38
-#define SCR_W   10
+#define WIN_W   530
+#define WIN_H   760
+#define MIN_W   530
+#define MIN_H   760
+#define BAR_H    48
+#define BOT_H    78
+#define SCR_W    12
 
 /* colours */
 #define C_BG        0x141416ff
 #define C_BAR       0x222224ff
 #define C_DIV       0x333336ff
 #define C_TEXT      0xf2f2f4ff
-#define C_MUTED     0x78787eff
+#define C_MUTED     0x8a8a90ff
 #define C_BTN       0x38383cff
 #define C_BTN_HOV   0x505056ff
 #define C_BTN_BRD   0x555558ff
@@ -35,13 +37,13 @@ static const int   MODE_BPP[]   = {1,3,4,2};
 /* audio */
 #define AUDIO_RATE  11025
 #define AUDIO_BUF   512
+#define MAX_GAIN    0.22f
 
 /* waterfall */
-#define VIEW_W_PX   128   /* logical columns (fewer = bigger pixels) */
-#define PIXEL_H       3   /* row height in screen px */
-#define SCROLL_SPD    1   /* px per frame, must be <= PIXEL_H */
+#define VIEW_W_PX   128 
+#define PIXEL_H       3 
 
-/* 5x7 bitmap */
+/* 5x7 bitmap font */
 static const Uint8 F57[][5]={
 {0,0,0,0,0},{0,0,95,0,0},{0,7,0,7,0},{20,127,20,127,20},
 {36,42,127,42,18},{35,19,8,100,98},{54,73,85,34,80},{0,5,3,0,0},
@@ -83,8 +85,9 @@ static void draw_char(SDL_Renderer*r,int x,int y,char c,int sc,Uint32 col){
     set_col(r,col);
     for(int cx=0;cx<5;cx++){
         Uint8 b=F57[i][cx];
-        for(int ry=0;ry<7;ry++)
+        for(int ry=0;ry<7;ry++) {
             if(b&(1<<ry)){SDL_Rect rc={x+cx*sc,y+ry*sc,sc,sc};SDL_RenderFillRect(r,&rc);}
+        }
     }
 }
 static void draw_str(SDL_Renderer*r,int x,int y,const char*s,int sc,Uint32 col){
@@ -105,6 +108,7 @@ static PixelMode g_mode     = MODE_RGB;
 
 static SDL_AudioDeviceID g_adev      = 0;
 static volatile size_t   g_audio_pos = 0;
+static double g_audio_accum = 0.0;
 
 static int    g_show_help    = 0;
 static int    g_scr_drag     = 0;
@@ -115,61 +119,39 @@ static char   g_flash[160]  = "";
 static Uint32 g_flash_until = 0;
 static int    g_flash_ok    = 1;
 
-static SDL_Rect g_vol_btn    = {8, 8, 20, 20};
 static SDL_Rect g_vol_slider = {0,0,0,0};
-static int g_vol_drag = 0;
-static int g_vol_show = 0;
-static float g_volume = 0.1f; // дефолт 10%
-static int g_muted = 0;
+static int   g_vol_drag = 0;
+static float g_vol_norm = 0.4f;
+static int   g_muted    = 0;
 
-/* audio callback  */
+/* audio */
 static void audio_cb(void*ud, Uint8*stream, int len){
     (void)ud;
-    if(!g_data || g_size==0 || g_muted || !g_playing){
-        SDL_memset(stream, 0, len);
-        return;
-    }
     Sint16* out = (Sint16*)stream;
     int n = len/2;
 
-    // коэф
-    const float scale8 = 0.08f; // 8% from полный диапазон
+    if(!g_data || g_size==0 || !g_playing){
+        SDL_memset(stream, 0, len);
+        return;
+    }
+
+    float gain = g_muted ? 0.0f : (g_vol_norm * MAX_GAIN);
+    double speed = g_speed;
+    if(speed < 0.001) speed = 0.001;
 
     for(int i=0; i<n; i++){
-        if(g_audio_pos >= g_size){ 
-            out[i]=0; 
-            continue; 
+        if(g_audio_pos >= g_size){
+            out[i]=0;
+            continue;
         }
-        Sint16 s = ((int)g_data[g_audio_pos++] - 128) << 8;
-        s = (Sint16)(s * scale8 * g_volume);
-        if(g_muted) s = 0;
-        out[i] = s;
-    }
-}
+        Sint16 s = (Sint16)(((int)g_data[g_audio_pos] - 128) << 8);
+        out[i] = (Sint16)(s * gain);
 
-/*  draw volume btn  */
-static void draw_volume(SDL_Renderer* ren){
-    if(g_vol_btn.w < 60) g_vol_btn.w = 60;
-
-    Uint32 col = g_vol_show ? C_BTN_HOV : C_BTN;
-    fill_rect(ren, g_vol_btn.x, g_vol_btn.y, g_vol_btn.w, g_vol_btn.h, col);
-    draw_border(ren, g_vol_btn.x, g_vol_btn.y, g_vol_btn.w, g_vol_btn.h, C_BTN_BRD);
-
-    const char* lbl = "Vol";  
-    int tw = str_w(lbl, 1);
-    int th = 7; 
-    draw_str(ren, g_vol_btn.x + (g_vol_btn.w - tw)/2, g_vol_btn.y + (g_vol_btn.h - th)/2, lbl, 1, C_TEXT);
-
-    if(g_vol_show){
-        int slider_w = 100, slider_h = 6;
-        g_vol_slider.x = g_vol_btn.x + g_vol_btn.w + 5;
-        g_vol_slider.y = g_vol_btn.y + (g_vol_btn.h - slider_h)/2;
-        g_vol_slider.w = slider_w;
-        g_vol_slider.h = slider_h;
-
-        fill_rect(ren, g_vol_slider.x, g_vol_slider.y, slider_w, slider_h, C_BTN);
-        int filled = (int)(g_volume * slider_w);
-        fill_rect(ren, g_vol_slider.x, g_vol_slider.y, filled, slider_h, C_ACT);
+        g_audio_accum += speed;
+        while(g_audio_accum >= 1.0 && g_audio_pos < g_size){
+            g_audio_pos++;
+            g_audio_accum -= 1.0;
+        }
     }
 }
 
@@ -188,22 +170,25 @@ static void do_flash(const char*m,int ok,int ms){
 static void load_file(const char*path){
     FILE*fp=fopen(path,"rb");
     if(!fp){do_flash("Cannot open file",0,3000);return;}
-    fseek(fp,0,SEEK_END);g_size=(size_t)ftell(fp);fseek(fp,0,SEEK_SET);
-    if(g_data)free(g_data);
-    g_data=(Uint8*)malloc(g_size?g_size:1);
-    if(fread(g_data,1,g_size,fp)!=g_size){
-        free(g_data);g_data=NULL;fclose(fp);do_flash("Read error",0,3000);return;
+    fseek(fp,0,SEEK_END);long sz=ftell(fp);fseek(fp,0,SEEK_SET);
+    if(sz<0){fclose(fp);do_flash("Cannot read file",0,3000);return;}
+    Uint8*nd=(Uint8*)malloc(sz?(size_t)sz:1);
+    if(!nd){fclose(fp);do_flash("Out of memory",0,3000);return;}
+    if(sz>0 && fread(nd,1,(size_t)sz,fp)!=(size_t)sz){
+        free(nd);fclose(fp);do_flash("Read error",0,3000);return;
     }
     fclose(fp);
+    if(g_data)free(g_data);
+    g_data=nd; g_size=(size_t)sz;
     const char*b=path;
     const char*sl=strrchr(path,'/'),*bs=strrchr(path,'\\');
     if(sl&&sl>=b)b=sl+1;if(bs&&bs>=b)b=bs+1;
     snprintf(g_name,sizeof(g_name),"%s",b);
-    g_pos=0;g_scroll_y=0;g_playing=1;g_audio_pos=0;
+    g_pos=0;g_scroll_y=0;g_playing=1;g_audio_pos=0;g_audio_accum=0.0;
     char buf[64];
     if(g_size>=(size_t)(1<<20)) snprintf(buf,sizeof(buf),"Loaded %.1f MB",(double)g_size/(1<<20));
     else if(g_size>=1024)       snprintf(buf,sizeof(buf),"Loaded %.1f KB",(double)g_size/1024);
-    else                        snprintf(buf,sizeof(buf),"Loaded %zu B",g_size);
+    else                         snprintf(buf,sizeof(buf),"Loaded %zu B",g_size);
     do_flash(buf,1,2500);
 }
 
@@ -217,9 +202,6 @@ static void decode_row(size_t byte_start,Uint8*out_rgba){
         switch(g_mode){
             case MODE_8G:  if(bi<g_size)rv=gv=bv=g_data[bi]; break;
             case MODE_RGB:
-                if(bi+0<g_size)rv=g_data[bi+0];
-                if(bi+1<g_size)gv=g_data[bi+1];
-                if(bi+2<g_size)bv=g_data[bi+2]; break;
             case MODE_RGBA:
                 if(bi+0<g_size)rv=g_data[bi+0];
                 if(bi+1<g_size)gv=g_data[bi+1];
@@ -237,9 +219,8 @@ static void decode_row(size_t byte_start,Uint8*out_rgba){
     }
 }
 
-/* buttons */
-#define SB_H   22
-#define SB_PAD  4
+/* buttons / layout */
+#define SB_H   30
 
 #define BID_8G    0
 #define BID_RGB   1
@@ -255,6 +236,7 @@ static void decode_row(size_t byte_start,Uint8*out_rgba){
 typedef struct { SDL_Rect r; const char*lbl; int id; } Btn;
 static Btn g_btns[BID_COUNT];
 static int g_hov[BID_COUNT];
+static SDL_Rect g_speed_pos;
 
 static int in_rect(int mx,int my,SDL_Rect b){
     return mx>=b.x&&mx<b.x+b.w&&my>=b.y&&my<b.y+b.h;
@@ -265,28 +247,48 @@ static void draw_btn(SDL_Renderer*r,SDL_Rect b,const char*lbl,int hov,int active
     Uint32 fg=active?C_ACT:C_TEXT;
     fill_rect(r,b.x,b.y,b.w,b.h,bg);
     draw_border(r,b.x,b.y,b.w,b.h,brd);
-    int tw=str_w(lbl,1);
-    draw_str(r,b.x+(b.w-tw)/2,b.y+(b.h-7)/2,lbl,1,fg);
+    int tw=str_w(lbl,2);
+    draw_str(r,b.x+(b.w-tw)/2,b.y+(b.h-14)/2,lbl,2,fg);
 }
 
-static void layout_buttons(int ww,int wh){
-    int y=wh-BOT_H+(BOT_H-SB_H)/2;
-    int mode_w[]={18,22,26,18};
-    int x=SB_PAD*2;
+static void layout_all(int ww,int wh){
+    int rowA_y = wh-BOT_H+8;
+    int rowB_y = rowA_y+SB_H+8;
+
+    int x=10;
     for(int m=0;m<4;m++){
-        int w=mode_w[m]+10;
-        g_btns[BID_8G+m]=(Btn){{x,y,w,SB_H},MODE_NAMES[m],BID_8G+m};
-        x+=w+SB_PAD;
+        int w=str_w(MODE_NAMES[m],2)+18;
+        g_btns[BID_8G+m]=(Btn){{x,rowA_y,w,SB_H},MODE_NAMES[m],BID_8G+m};
+        x+=w+6;
     }
-    int tw_rw=22,tw_play=38,tw_ff=22;
-    int total=tw_rw+SB_PAD+tw_play+SB_PAD+tw_ff;
-    int cx=(ww-total)/2;
-    g_btns[BID_RW]  =(Btn){{cx,y,tw_rw,  SB_H},"<<",  BID_RW};   cx+=tw_rw+SB_PAD;
-    g_btns[BID_PLAY]=(Btn){{cx,y,tw_play,SB_H},"PLAY",BID_PLAY}; cx+=tw_play+SB_PAD;
-    g_btns[BID_FF]  =(Btn){{cx,y,tw_ff,  SB_H},">>",  BID_FF};
-    int rx=ww-SB_PAD*2;
-    g_btns[BID_HELP]=(Btn){{rx-20,y,20,SB_H},"?",   BID_HELP}; rx-=20+SB_PAD;
-    g_btns[BID_MUTE]=(Btn){{rx-32,y,32,SB_H},"MUTE",BID_MUTE};
+
+    int vol_label_w = str_w("VOL",2);
+    int vol_x = x+14;
+    int vol_label_x = vol_x;
+    int slider_w = 90, slider_h = 10;
+    g_vol_slider.x = vol_label_x+vol_label_w+8;
+    g_vol_slider.y = rowA_y+(SB_H-slider_h)/2;
+    g_vol_slider.w = slider_w;
+    g_vol_slider.h = slider_h;
+
+    int help_w = str_w("?",2)+18;
+    int mute_w = str_w("MUTE",2)+18;
+    int rx = ww-10;
+    rx -= help_w; g_btns[BID_HELP]=(Btn){{rx,rowA_y,help_w,SB_H},"?",BID_HELP};
+    rx -= 8;
+    rx -= mute_w; g_btns[BID_MUTE]=(Btn){{rx,rowA_y,mute_w,SB_H},"MUTE",BID_MUTE};
+
+    int rw_w=str_w("<<",2)+18;
+    int ff_w=str_w(">>",2)+18;
+    int play_w=str_w("PAUSE",2)+22;
+    int total=rw_w+8+play_w+8+ff_w;
+    int cx=(ww-total)/2; if(cx<10)cx=10;
+    g_btns[BID_RW]  =(Btn){{cx,rowB_y,rw_w,  SB_H},"<<",   BID_RW};   cx+=rw_w+8;
+    g_btns[BID_PLAY]=(Btn){{cx,rowB_y,play_w,SB_H},"PLAY",BID_PLAY}; cx+=play_w+8;
+    g_btns[BID_FF]  =(Btn){{cx,rowB_y,ff_w,  SB_H},">>",  BID_FF};
+
+    g_speed_pos.x = g_btns[BID_FF].r.x+g_btns[BID_FF].r.w+14;
+    g_speed_pos.y = rowB_y;
 }
 
 static void draw_waterfall(SDL_Renderer*ren,int ww,int wh){
@@ -294,6 +296,15 @@ static void draw_waterfall(SDL_Renderer*ren,int ww,int wh){
     if(vh<=0||vw<=0)return;
 
     int stride=row_stride();
+
+    if(stride>0){
+        double rowf = g_pos/(double)stride;
+        double frac = rowf - floor(rowf);
+        g_scroll_y = (int)(frac*(double)PIXEL_H);
+    } else {
+        g_scroll_y = 0;
+    }
+
     float scale=(float)vw/(float)VIEW_W_PX;
     int cell_h=PIXEL_H;
     int rows=vh/cell_h+2;
@@ -339,11 +350,10 @@ static void draw_waterfall(SDL_Renderer*ren,int ww,int wh){
         fill_rect(ren,bx,by,filled,bh,C_ACT);
     }
 
-    /* scrollbar */
     int sx=ww-SCR_W,sy=vy,sh=vh;
     fill_rect(ren,sx,sy,SCR_W,sh,0x1e1e20ff);
     if(g_size>0){
-        int thumb_h=sh/8; if(thumb_h<20)thumb_h=20; if(thumb_h>sh)thumb_h=sh;
+        int thumb_h=sh/8; if(thumb_h<24)thumb_h=24; if(thumb_h>sh)thumb_h=sh;
         double frac=g_pos/(double)g_size;
         int thumb_y=sy+(int)(frac*(sh-thumb_h));
         if(thumb_y<sy)thumb_y=sy;
@@ -354,20 +364,33 @@ static void draw_waterfall(SDL_Renderer*ren,int ww,int wh){
     }
 }
 
+static void draw_volume(SDL_Renderer*ren,int rowA_y){
+    int label_x = g_btns[BID_16G].r.x+g_btns[BID_16G].r.w+14;
+    Uint32 lc = g_muted? C_MUTED : C_TEXT;
+    draw_str(ren,label_x,rowA_y+(SB_H-14)/2,"VOL",2,lc);
+
+    fill_rect(ren,g_vol_slider.x,g_vol_slider.y,g_vol_slider.w,g_vol_slider.h,C_BTN);
+    draw_border(ren,g_vol_slider.x-1,g_vol_slider.y-1,g_vol_slider.w+2,g_vol_slider.h+2,C_BTN_BRD);
+    int filled=(int)(g_vol_norm*g_vol_slider.w);
+    fill_rect(ren,g_vol_slider.x,g_vol_slider.y,filled,g_vol_slider.h,g_muted?C_MUTED:C_ACT);
+    int knob_x = g_vol_slider.x+filled-3;
+    fill_rect(ren,knob_x,g_vol_slider.y-3,6,g_vol_slider.h+6,g_muted?C_MUTED:C_TEXT);
+}
+
 static void draw_help(SDL_Renderer*r,int ww,int wh){
     SDL_SetRenderDrawBlendMode(r,SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(r,0x14,0x14,0x16,0xd0);
     SDL_Rect full={0,0,ww,wh}; SDL_RenderFillRect(r,&full);
     SDL_SetRenderDrawBlendMode(r,SDL_BLENDMODE_NONE);
 
-    int pw=320,ph=230,px=(ww-pw)/2,py=(wh-ph)/2;
+    int pw=380,ph=260,px=(ww-pw)/2,py=(wh-ph)/2;
     fill_rect(r,px,py,pw,ph,C_BAR);
     draw_border(r,px,py,pw,ph,C_DIV);
     draw_border(r,px+1,py+1,pw-2,ph-2,0x444448ff);
 
     const char*title="Keyboard Shortcuts";
-    draw_str(r,px+(pw-str_w(title,1))/2,py+10,title,1,C_TEXT);
-    fill_rect(r,px+12,py+22,pw-24,1,C_DIV);
+    draw_str(r,px+(pw-str_w(title,2))/2,py+14,title,2,C_TEXT);
+    fill_rect(r,px+12,py+34,pw-24,1,C_DIV);
 
     static const char*keys[][2]={
         {"Space",       "Play / Pause"},
@@ -378,14 +401,14 @@ static void draw_help(SDL_Renderer*r,int ww,int wh){
         {"Scrollbar",   "Click or drag to seek"},
         {"Drag & Drop", "Load any file"},
     };
-    int ny=py+30;
+    int ny=py+46;
     for(int i=0;i<7;i++){
-        draw_str(r,px+16,ny,keys[i][0],1,C_ACT);
-        draw_str(r,px+140,ny,keys[i][1],1,C_MUTED);
-        ny+=18;
+        draw_str(r,px+18,ny,keys[i][0],1,C_ACT);
+        draw_str(r,px+160,ny,keys[i][1],1,C_MUTED);
+        ny+=22;
     }
     const char*cl="[?] or [Esc] to close";
-    draw_str(r,px+(pw-str_w(cl,1))/2,py+ph-16,cl,1,C_MUTED);
+    draw_str(r,px+(pw-str_w(cl,1))/2,py+ph-18,cl,1,C_MUTED);
 }
 
 int main(int argc,char**argv){
@@ -393,6 +416,7 @@ int main(int argc,char**argv){
     SDL_Window*win=SDL_CreateWindow("Bytefall",
         SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,WIN_W,WIN_H,
         SDL_WINDOW_RESIZABLE|SDL_WINDOW_ALLOW_HIGHDPI);
+    SDL_SetWindowMinimumSize(win,MIN_W,MIN_H);
     SDL_Renderer*ren=SDL_CreateRenderer(win,-1,
         SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
     SDL_SetRenderDrawBlendMode(ren,SDL_BLENDMODE_BLEND);
@@ -405,113 +429,107 @@ int main(int argc,char**argv){
         int mx,my; SDL_GetMouseState(&mx,&my);
         int ww,wh; SDL_GetWindowSize(win,&ww,&wh);
 
-        layout_buttons(ww,wh);
+        layout_all(ww,wh);
         for(int i=0;i<BID_COUNT;i++)
             g_hov[i]=in_rect(mx,my,g_btns[i].r);
 
         while(SDL_PollEvent(&ev)){
-			    if(ev.type==SDL_MOUSEBUTTONDOWN && ev.button.button==SDL_BUTTON_LEFT){
-        int bx=ev.button.x, by=ev.button.y;
-
-        // button 
-        if(bx>=g_vol_btn.x && bx<g_vol_btn.x+g_vol_btn.w &&
-           by>=g_vol_btn.y && by<g_vol_btn.y+g_vol_btn.h){
-            g_vol_show = !g_vol_show;
-        }
-
-        // scroll bar 
-        if(g_vol_show &&
-           bx>=g_vol_slider.x && bx<g_vol_slider.x+g_vol_slider.w &&
-           by>=g_vol_slider.y && by<g_vol_slider.y+g_vol_slider.h){
-            g_vol_drag = 1;
-        }
-    }
-
-    if(ev.type==SDL_MOUSEBUTTONUP && ev.button.button==SDL_BUTTON_LEFT){
-        g_vol_drag = 0;
-    }
-
-    if(ev.type==SDL_MOUSEMOTION && g_vol_drag){
-        int mx = ev.motion.x;
-        float v = (float)(mx - g_vol_slider.x)/(float)g_vol_slider.w;
-        if(v<0)v=0; if(v>1)v=1;
-        g_volume = v;
-    }
             if(ev.type==SDL_QUIT) running=0;
+
             if(ev.type==SDL_KEYDOWN){
                 if(g_show_help){
                     if(ev.key.keysym.sym==SDLK_ESCAPE||ev.key.keysym.sym==SDLK_SLASH
                        ||ev.key.keysym.sym==SDLK_QUESTION||ev.key.keysym.sym==SDLK_h)
                         g_show_help=0;
-                    break;
-                }
-                switch(ev.key.keysym.sym){
-                    case SDLK_ESCAPE: case SDLK_q: running=0; break;
-                    case SDLK_SPACE:  g_playing=!g_playing; break;
-                    case SDLK_r:      g_pos=0;g_scroll_y=0;g_playing=1;g_audio_pos=0; break;
-                    case SDLK_m:      g_muted=!g_muted; break;
-                    case SDLK_h: case SDLK_SLASH: g_show_help=!g_show_help; break;
-                    case SDLK_UP:   g_speed*=2.0;if(g_speed>32)g_speed=32; break;
-                    case SDLK_DOWN: g_speed*=0.5;if(g_speed<0.125)g_speed=0.125; break;
-                }
-            }
-            if(ev.type==SDL_MOUSEBUTTONDOWN&&ev.button.button==SDL_BUTTON_LEFT){
-                if(g_show_help){g_show_help=0;break;}
-                int bx=ev.button.x,by=ev.button.y;
-                int vy=BAR_H,vh=wh-BAR_H-BOT_H,sx=ww-SCR_W;
-                if(bx>=sx&&g_size>0){
-                    int sh=vh;
-                    int thumb_h=sh/8; if(thumb_h<20)thumb_h=20;
-                    int thumb_y=vy+(int)((g_pos/(double)g_size)*(sh-thumb_h));
-                    if(by>=thumb_y&&by<thumb_y+thumb_h){
-                        g_scr_drag=1;g_scr_drag_y=by;g_scr_drag_pos=g_pos;
-                    } else {
-                        double nf=(double)(by-vy)/(double)sh;
-                        if(nf<0)nf=0;if(nf>1)nf=1;
-                        g_pos=nf*(double)g_size;g_audio_pos=(size_t)g_pos;
+                } else {
+                    switch(ev.key.keysym.sym){
+                        case SDLK_ESCAPE: case SDLK_q: running=0; break;
+                        case SDLK_SPACE:  g_playing=!g_playing; break;
+                        case SDLK_r:      g_pos=0;g_audio_pos=0;g_audio_accum=0.0;g_playing=1; break;
+                        case SDLK_m:      g_muted=!g_muted; break;
+                        case SDLK_h: case SDLK_SLASH: g_show_help=!g_show_help; break;
+                        case SDLK_UP:   g_speed*=2.0;if(g_speed>32)g_speed=32; break;
+                        case SDLK_DOWN: g_speed*=0.5;if(g_speed<0.125)g_speed=0.125; break;
                     }
-                    break;
                 }
-                if(g_hov[BID_PLAY]) g_playing=!g_playing;
-                if(g_hov[BID_RW]){int s=row_stride();g_pos-=s*30;if(g_pos<0)g_pos=0;g_audio_pos=(size_t)g_pos;}
-                if(g_hov[BID_FF]&&g_size){int s=row_stride();g_pos+=s*30;g_audio_pos=(size_t)g_pos;}
-                if(g_hov[BID_MUTE]) g_muted=!g_muted;
-                if(g_hov[BID_HELP]) g_show_help=!g_show_help;
-                for(int m=0;m<4;m++) if(g_hov[BID_8G+m]) g_mode=(PixelMode)m;
-                (void)bx;(void)by;
             }
-            if(ev.type==SDL_MOUSEBUTTONUP&&ev.button.button==SDL_BUTTON_LEFT)
+
+            if(ev.type==SDL_MOUSEBUTTONDOWN&&ev.button.button==SDL_BUTTON_LEFT){
+                int bx=ev.button.x,by=ev.button.y;
+                if(g_show_help){
+                    g_show_help=0;
+                } else if(in_rect(bx,by,g_vol_slider)){
+                    g_vol_drag=1;
+                    float v=(float)(bx-g_vol_slider.x)/(float)g_vol_slider.w;
+                    if(v<0)v=0; if(v>1)v=1;
+                    g_vol_norm=v;
+                } else {
+                    int vy=BAR_H,vh=wh-BAR_H-BOT_H,sx=ww-SCR_W;
+                    int handled=0;
+                    if(bx>=sx&&g_size>0){
+                        handled=1;
+                        int sh=vh;
+                        int thumb_h=sh/8; if(thumb_h<24)thumb_h=24;
+                        int thumb_y=vy+(int)((g_pos/(double)g_size)*(sh-thumb_h));
+                        if(by>=thumb_y&&by<thumb_y+thumb_h){
+                            g_scr_drag=1;g_scr_drag_y=by;g_scr_drag_pos=g_pos;
+                        } else {
+                            double nf=(double)(by-vy)/(double)sh;
+                            if(nf<0)nf=0;if(nf>1)nf=1;
+                            g_pos=nf*(double)g_size;g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;
+                        }
+                    }
+                    if(!handled){
+                        if(g_hov[BID_PLAY]) g_playing=!g_playing;
+                        if(g_hov[BID_RW]){int s=row_stride();g_pos-=s*30;if(g_pos<0)g_pos=0;g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;}
+                        if(g_hov[BID_FF]&&g_size){int s=row_stride();g_pos+=s*30;if(g_pos>(double)g_size)g_pos=(double)g_size;g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;}
+                        if(g_hov[BID_MUTE]) g_muted=!g_muted;
+                        if(g_hov[BID_HELP]) g_show_help=!g_show_help;
+                        for(int m=0;m<4;m++) if(g_hov[BID_8G+m]) g_mode=(PixelMode)m;
+                    }
+                }
+            }
+
+            if(ev.type==SDL_MOUSEBUTTONUP&&ev.button.button==SDL_BUTTON_LEFT){
                 g_scr_drag=0;
-            if(ev.type==SDL_MOUSEMOTION&&g_scr_drag&&g_size>0){
-                int sh=wh-BAR_H-BOT_H;
-                int thumb_h=sh/8; if(thumb_h<20)thumb_h=20;
-                double delta=(double)(ev.motion.y-g_scr_drag_y)/(double)(sh-thumb_h);
-                g_pos=g_scr_drag_pos+delta*(double)g_size;
-                if(g_pos<0)g_pos=0;
-                if(g_pos>(double)g_size)g_pos=(double)g_size;
-                g_audio_pos=(size_t)g_pos;
+                g_vol_drag=0;
             }
+
+            if(ev.type==SDL_MOUSEMOTION){
+                if(g_vol_drag){
+                    float v=(float)(ev.motion.x-g_vol_slider.x)/(float)g_vol_slider.w;
+                    if(v<0)v=0; if(v>1)v=1;
+                    g_vol_norm=v;
+                }
+                if(g_scr_drag&&g_size>0){
+                    int sh=wh-BAR_H-BOT_H;
+                    int thumb_h=sh/8; if(thumb_h<24)thumb_h=24;
+                    if(sh-thumb_h>0){
+                        double delta=(double)(ev.motion.y-g_scr_drag_y)/(double)(sh-thumb_h);
+                        g_pos=g_scr_drag_pos+delta*(double)g_size;
+                        if(g_pos<0)g_pos=0;
+                        if(g_pos>(double)g_size)g_pos=(double)g_size;
+                        g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;
+                    }
+                }
+            }
+
             if(ev.type==SDL_MOUSEWHEEL&&!g_show_help){
                 int s=row_stride();
                 g_pos-=ev.wheel.y*s*5;
                 if(g_pos<0)g_pos=0;
-                g_audio_pos=(size_t)g_pos;
+                if(g_pos>(double)g_size)g_pos=(double)g_size;
+                g_audio_pos=(size_t)g_pos;g_audio_accum=0.0;
             }
             if(ev.type==SDL_DROPFILE){load_file(ev.drop.file);SDL_free(ev.drop.file);}
         }
 
         if(g_playing&&g_data&&g_size>0&&!g_show_help){
-            int stride=row_stride();
-            g_scroll_y+=SCROLL_SPD;
-            if(g_scroll_y>=PIXEL_H){
-                g_scroll_y-=PIXEL_H;
-                g_pos+=(double)stride*g_speed;
-                if(g_pos>=(double)g_size){
-                    g_pos=(double)g_size;g_playing=0;
-                    do_flash("End of file",1,2000);
-                }
-                /* sync */
-                g_audio_pos=(size_t)g_pos;
+            g_pos=(double)g_audio_pos;
+            if(g_audio_pos>=g_size){
+                g_pos=(double)g_size;
+                g_playing=0;
+                do_flash("End of file",1,2000);
             }
         }
 
@@ -526,11 +544,8 @@ int main(int argc,char**argv){
             char sz[32];
             if(g_size>=(size_t)(1<<20)) snprintf(sz,sizeof(sz),"%.1f MB",(double)g_size/(1<<20));
             else if(g_size>=1024)       snprintf(sz,sizeof(sz),"%.1f KB",(double)g_size/1024);
-            else                        snprintf(sz,sizeof(sz),"%zu B",g_size);
-            draw_str(ren,ww-str_w(sz,1)-8,BAR_H/2-3,sz,1,C_MUTED);
-        } else {
-            const char*h="Drop any file here";
-            draw_str(ren,(ww-str_w(h,1))/2,BAR_H/2-3,h,1,C_MUTED);
+            else                         snprintf(sz,sizeof(sz),"%zu B",g_size);
+            draw_str(ren,ww-str_w(sz,1)-10,BAR_H/2-3,sz,1,C_MUTED);
         }
 
         draw_waterfall(ren,ww,wh);
@@ -540,25 +555,27 @@ int main(int argc,char**argv){
         }
 
         /* bottom bar */
+        int rowA_y = wh-BOT_H+8;
         fill_rect(ren,0,wh-BOT_H,ww,BOT_H,C_BAR);
         fill_rect(ren,0,wh-BOT_H,ww,1,C_DIV);
 
         for(int m=0;m<4;m++)
             draw_btn(ren,g_btns[BID_8G+m].r,MODE_NAMES[m],g_hov[BID_8G+m],(g_mode==m));
-        draw_btn(ren,g_btns[BID_RW].r,  "<<",              g_hov[BID_RW],  0);
-        draw_btn(ren,g_btns[BID_PLAY].r,g_playing?"||":"|>",g_hov[BID_PLAY],0);
-        draw_btn(ren,g_btns[BID_FF].r,  ">>",              g_hov[BID_FF],  0);
-        draw_btn(ren,g_btns[BID_MUTE].r,g_muted?"(M)":"MUT",g_hov[BID_MUTE],g_muted);
-        draw_btn(ren,g_btns[BID_HELP].r,"?",               g_hov[BID_HELP],g_show_help);
+        draw_volume(ren,rowA_y);
+        draw_btn(ren,g_btns[BID_MUTE].r,"MUTE",g_hov[BID_MUTE],g_muted);
+        draw_btn(ren,g_btns[BID_HELP].r,"?",   g_hov[BID_HELP],g_show_help);
 
-        char spbuf[12]; snprintf(spbuf,sizeof(spbuf),"x%.3g",g_speed);
-        SDL_Rect mr=g_btns[BID_MUTE].r;
-        draw_str(ren,mr.x+mr.w+5,mr.y+(SB_H-7)/2,spbuf,1,C_MUTED);
+        draw_btn(ren,g_btns[BID_RW].r,  "<<",              g_hov[BID_RW],  0);
+        draw_btn(ren,g_btns[BID_PLAY].r,g_playing?"PAUSE":"PLAY",g_hov[BID_PLAY],g_playing);
+        draw_btn(ren,g_btns[BID_FF].r,  ">>",              g_hov[BID_FF],  0);
+
+        char spbuf[16]; snprintf(spbuf,sizeof(spbuf),"x%.3g",g_speed);
+        draw_str(ren,g_speed_pos.x,g_speed_pos.y+(SB_H-7)/2,spbuf,1,C_MUTED);
 
         if(SDL_GetTicks()<g_flash_until){
             Uint32 bc=g_flash_ok?C_GREEN_BG:C_RED_BG,tc=g_flash_ok?C_GREEN:C_RED;
-            int fw=str_w(g_flash,1)+24,fh=20;
-            int fx=ww-fw-10,fy=wh-BOT_H-fh-6;
+            int fw=str_w(g_flash,1)+24,fh=22;
+            int fx=ww-fw-10,fy=wh-BOT_H-fh-8;
             fill_rect(ren,fx,fy,fw,fh,bc);
             draw_border(ren,fx,fy,fw,fh,tc);
             draw_str(ren,fx+12,fy+(fh-7)/2,g_flash,1,tc);
@@ -566,7 +583,6 @@ int main(int argc,char**argv){
 
         if(g_show_help) draw_help(ren,ww,wh);
 
-		draw_volume(ren);
         SDL_RenderPresent(ren);
         SDL_Delay(8);
     }
