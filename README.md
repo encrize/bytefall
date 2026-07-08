@@ -12,26 +12,10 @@ Bytefall is a minimal, highly optimized binary file visualizer and raw audio pla
 ### Windows
 > Requires MSYS2 mingw-w64.
 ```bash
-pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2
+pacman -S make
 ```
 ```bash
- gcc -O3 -o bytefall.exe bytefall.c -static -lmingw32 -lSDL2main -lSDL2 -mwindows -lwinmm -limm32 -lole32 -loleaut32 -lversion -lpropsys -lsetupapi -lcfgmgr32
-```
-### Linux
-> Requires SDL2
-```bash
-sudo apt install libsdl2-dev
-```
-```bash
-gcc bytefall.c -o bytefall $(sdl2-config --cflags --libs) -lm
-```
-### macOS
-> Requires SDL2 via Homebrew
-```bash
-brew install sdl2
-```
-```bash
-gcc bytefall.c -o bytefall $(sdl2-config --cflags --libs) -lm
+make
 ```
 
 ## Usage
