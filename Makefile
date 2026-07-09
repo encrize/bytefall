@@ -1,7 +1,5 @@
 CC      = gcc
-# Добавляем -static для полной статической линковки
 CFLAGS  = -Wall -Wextra -O2 -std=c11 $(shell sdl2-config --cflags)
-# Указываем библиотеки для Windows, чтобы линкер не искал их в системе
 LIBS    = -static $(shell sdl2-config --libs) -lwinmm -limm32 -lole32 -loleaut32 -lversion -lpropsys -lsetupapi -lcfgmgr32 -lm
 
 SRCDIR  = .
@@ -26,5 +24,4 @@ $(OBJDIR):
 clean:
 	rm -rf $(OBJDIR) $(TARGET)
 
-# Зависимости
 $(OBJS): app.h
