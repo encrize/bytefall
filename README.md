@@ -46,4 +46,6 @@ Drag and drop any file onto the exe/window or pass it as an argument:
 You can create images like that using [img2bin](https://github.com/encrize/image-to-bin)
 ![IMG2BIN](previewBIN.png)
 
+---
+
 made by encrize , my website - https://encrize.vip
