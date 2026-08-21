@@ -1,12 +1,18 @@
 <div align="center">
-  <h1>BYTEFALL</h1>
-  <p><strong>Visualize bytes. Hear data.</strong></p>
-  <p>
-    <img src="https://img.shields.io/badge/C-C11-00599C?style=flat-square&logo=c&logoColor=white" alt="C11">
-    <img src="https://img.shields.io/badge/SDL-2.0-0B7BB3?style=flat-square" alt="SDL2">
-    <img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-555555?style=flat-square" alt="Linux and Windows">
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-46A2F1?style=flat-square" alt="MIT License"></a>
-  </p>
+
+# BYTEFALL
+
+**Visualize bytes. Hear data.**
+
+<p>
+  <img alt="Language: C11" src="https://img.shields.io/badge/C-C11-A8B9CC?style=for-the-badge&logo=c&logoColor=white">
+  <img alt="SDL 2.0" src="https://img.shields.io/badge/SDL-2.0-0B7BB3?style=for-the-badge">
+  <img alt="Linux and Windows" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-555555?style=for-the-badge">
+</p>
+<p>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-46A171?style=flat-square"></a>
+</p>
+
 </div>
 
 <p align="center">
