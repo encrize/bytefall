@@ -1,27 +1,46 @@
-CC      = gcc
-CFLAGS  = -Wall -Wextra -O2 -std=c11 $(shell sdl2-config --cflags)
-LIBS    = -static $(shell sdl2-config --libs) -lwinmm -limm32 -lole32 -loleaut32 -lversion -lpropsys -lsetupapi -lcfgmgr32 -lm
+CC = gcc
+PKG_CONFIG ?= pkg-config
 
-SRCDIR  = .
-OBJDIR  = obj
-SRCS    = $(wildcard $(SRCDIR)/*.c)
-OBJS    = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SRCS))
-TARGET  = bytefall.exe
+ifeq ($(OS),Windows_NT)
+EXEEXT := .exe
+endif
 
-.PHONY: all clean
+TARGET := bytefall$(EXEEXT)
+OBJDIR := obj
+SRCS := $(wildcard *.c)
+OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(SRCS))
+
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+
+SDL2_CFLAGS := $(shell $(PKG_CONFIG) --cflags sdl2)
+SDL2_LIBS := $(shell $(PKG_CONFIG) --libs sdl2)
+
+CPPFLAGS += $(SDL2_CFLAGS)
+CFLAGS ?= -O2
+CFLAGS += -Wall -Wextra -std=c11
+LDLIBS += $(SDL2_LIBS) -lm
+
+.PHONY: all clean install uninstall
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) -o $@ $^ $(LIBS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
-	$(CC) $(CFLAGS) -c -o $@ $<
+$(OBJDIR)/%.o: %.c | $(OBJDIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(OBJDIR):
-	mkdir -p $(OBJDIR)
+	mkdir -p $@
+
+install: $(TARGET)
+	install -Dm755 $(TARGET) "$(DESTDIR)$(BINDIR)/$(TARGET)"
+
+uninstall:
+	rm -f "$(DESTDIR)$(BINDIR)/$(TARGET)"
 
 clean:
-	rm -rf $(OBJDIR) $(TARGET)
+	rm -rf $(OBJDIR) bytefall bytefall.exe
 
-$(OBJS): app.h
+$(OBJS): app.h config.h
